@@ -1,0 +1,15 @@
+# Disco virtual gerado durante a execução
+filesystem.img
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Arquivos locais de editores e sistema
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

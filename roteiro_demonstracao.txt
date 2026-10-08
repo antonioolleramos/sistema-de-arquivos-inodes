@@ -1,0 +1,27 @@
+mkdir demonstracao
+cd demonstracao
+touch vazio.txt
+echo "conteudo legal" > arquivo.txt
+echo " e mais conteudo" >> arquivo.txt
+cat arquivo.txt
+cp arquivo.txt copia.txt
+mv copia.txt renomeado.txt
+ln -s arquivo.txt atalho.txt
+cat atalho.txt
+mkdir temporaria
+rmdir temporaria
+mkdir subpasta
+ln -s subpasta atalho_dir
+cd atalho_dir
+cd ..
+rm atalho_dir
+rm atalho.txt
+rm renomeado.txt
+rm vazio.txt
+rmdir subpasta
+cd /
+mkdir destino
+mv demonstracao /destino
+cat /destino/demonstracao/arquivo.txt
+ls /destino/demonstracao
+exit

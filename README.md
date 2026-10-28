@@ -6,6 +6,12 @@ O sistema permite criar, ler, copiar, mover e remover arquivos e diretórios, al
 
 O sistema é multiusuário: cada usuário entra com login e senha, possui uma área própria (`/home/usuario`) e todos os arquivos e diretórios têm um dono e permissões de leitura e escrita para o dono e para os demais usuários. As senhas são guardadas apenas como hash, em um arquivo inacessível aos usuários comuns. Os detalhes estão na seção [Usuários, senhas e permissões](#usuários-senhas-e-permissões).
 
+## Demonstração do terminal
+
+![Demonstração animada do sistema de arquivos com criação de diretórios, escrita, cópia e links](docs/demonstracao-terminal.svg)
+
+A animação mostra uma sessão demonstrativa executada com `main.py`: `mkdir`, `cd`, `echo`, `cat`, `cp`, `mv`, `ln -s`, `ls -l` e `rm`. Os dados são fictícios; não são exibidas senhas. **Dica:** para testar, execute `python main.py` conforme as instruções abaixo.
+
 ## Requisitos
 
 - Python 3.10 ou superior.

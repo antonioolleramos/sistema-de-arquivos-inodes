@@ -22,7 +22,16 @@ class SistemaArquivosTest(unittest.TestCase):
         self.fs = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.fs)
         self.fs.DISCO = str(Path(self.pasta.name) / 'filesystem.img')
+        self.fs.ITERACOES_HASH = 1000  # acelera os testes
         self.fs.inicializar()
+        # A maioria dos testes opera como root, que ignora as permissões.
+        self.fs.usuario_atual = 'root'
+        self.base_inodes = sum(self.fs.bitmap_inode)
+
+    def reabrir(self):
+        # Simula uma nova execução e volta a operar como root.
+        self.fs.inicializar()
+        self.fs.usuario_atual = 'root'
 
     def tearDown(self):
         if self.fs.f is not None:
@@ -218,14 +227,15 @@ class SistemaArquivosTest(unittest.TestCase):
     def test_fronteiras_blocos_e_liberacao(self):
         self.comandos('touch f')
         i = self.fs.resolver('f')
+        blocos = sum(self.fs.bitmap_bloco)
         for tamanho in (0, 1, 2047, 2048, 2049, 24576, 24577, 48000):
             dados = ('áβ🙂'.encode() * 6001)[:tamanho]
             self.alterar(self.fs.escrever, i, dados)
             self.assertEqual(self.conteudo('f'), dados)
             self.integridade()
         self.comandos('rm f')
-        self.assertEqual(sum(self.fs.bitmap_inode), 1)
-        self.assertEqual(sum(self.fs.bitmap_bloco), self.fs.INICIO_DADOS + 1)
+        self.assertEqual(sum(self.fs.bitmap_inode), self.base_inodes)
+        self.assertEqual(sum(self.fs.bitmap_bloco), blocos)
         self.integridade()
 
     def test_esgotamento_real_inodes_preserva_original(self):
@@ -234,7 +244,7 @@ class SistemaArquivosTest(unittest.TestCase):
         with fs.transacao():
             entradas = fs.ler_dir(0)
             # Deixa espaço inicial para os i-nodes de continuação da raiz.
-            for n in range(fs.MAX_INODES - 8):
+            for n in range(fs.bitmap_inode.count(0) - 8):
                 nome = f'v{n}'
                 entradas[nome] = fs.novo_inode(nome, 'arquivo')
             fs.salvar_dir(0, entradas)
@@ -255,13 +265,13 @@ class SistemaArquivosTest(unittest.TestCase):
     def test_disco_cheio_e_capacidade_acima_24_mib(self):
         fs = self.fs
         self.comandos('touch grande')
-        tamanho = (fs.TOTAL_BLOCOS - fs.INICIO_DADOS - 1) * fs.TAM_BLOCO
+        tamanho = fs.bitmap_bloco.count(0) * fs.TAM_BLOCO
         self.alterar(fs.escrever, fs.resolver('grande'), b'x' * tamanho)
         self.assertEqual(fs.bitmap_bloco.count(0), 0)
         self.assertEqual(len(self.conteudo('grande')), tamanho)
         self.assertGreater(tamanho, 24 * 1024 * 1024)
         fs.f.close()
-        fs.inicializar()
+        self.reabrir()
         self.assertEqual(self.conteudo('grande'), b'x' * tamanho)
         antes = self.resumo_disco()
         with self.assertRaisesRegex(OSError, 'Disco cheio'):
@@ -305,7 +315,7 @@ class SistemaArquivosTest(unittest.TestCase):
     def test_persistencia_reabertura(self):
         self.comandos('mkdir a', 'echo "persistiu" > a/f', 'ln -s /a/f link')
         self.fs.f.close()
-        self.fs.inicializar()
+        self.reabrir()
         self.assertEqual(self.conteudo('link'), b'persistiu')
         self.integridade()
 
@@ -316,12 +326,12 @@ class SistemaArquivosTest(unittest.TestCase):
         fs.f.seek(0)
         fs.f.write(len(dados).to_bytes(8, 'little') + dados)
         fs.f.close()
-        fs.inicializar()
+        self.reabrir()
         self.assertEqual(len(fs.inodes), 8192)
         self.assertEqual(self.conteudo('link'), b'antigo')
         self.comandos('echo " novo" >> a/f')
         fs.f.close()
-        fs.inicializar()
+        self.reabrir()
         self.assertEqual(self.conteudo('link'), b'antigo novo')
         self.integridade()
 
@@ -331,24 +341,27 @@ class SistemaArquivosTest(unittest.TestCase):
         antes = self.resumo_disco()
         self.fs.f.close()
         with self.assertRaisesRegex(ValueError, 'metadados'):
-            self.fs.inicializar()
+            self.reabrir()
         self.assertEqual(antes, self.resumo_disco())
 
     def test_dois_processos_e_eof(self):
         self.fs.f.close()
-        for entrada, esperado in [('echo "persistiu" > f\nexit\n', 'iniciado'),
-                                  ('cat /f\n', 'persistiu')]:
+        for entrada, esperado in [('raiz\nroot\nraiz\n' + 'echo "persistiu" > /f\nexit\n', 'iniciado'),
+                                  ('root\nraiz\ncat /f\n', 'persistiu')]:
             result = subprocess.run([sys.executable, str(MAIN)], cwd=self.pasta.name,
                                     input=entrada, text=True, capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(esperado, result.stdout)
             self.assertNotIn('EOF when reading', result.stdout)
-        self.fs.inicializar()
+        self.reabrir()
         self.integridade()
 
     def test_ctrl_c_fecha_imagem(self):
         self.fs.f.close()
-        with patch('builtins.input', side_effect=KeyboardInterrupt), contextlib.redirect_stdout(io.StringIO()):
+        # ler_senha também é simulado: no Windows, getpass lê direto do console.
+        with patch('builtins.input', side_effect=KeyboardInterrupt), \
+                patch.object(self.fs, 'ler_senha', side_effect=KeyboardInterrupt), \
+                contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(self.fs.main(), 0)
         self.assertTrue(self.fs.f.closed)
 
@@ -390,7 +403,7 @@ class SistemaArquivosTest(unittest.TestCase):
                     modelo[destino] = modelo.pop(origem)
             if n % 40 == 0:
                 self.fs.f.close()
-                self.fs.inicializar()
+                self.reabrir()
                 self.integridade()
                 for caminho, esperado in modelo.items():
                     self.assertEqual(self.conteudo(caminho), esperado)
@@ -428,7 +441,7 @@ class SistemaArquivosTest(unittest.TestCase):
 
     def test_terminal_continua_apos_erros_de_usuario(self):
         self.fs.f.close()
-        entrada = ('cat ausente\necho "x" >\nmkdir pasta\necho "ok" > pasta/f\n'
+        entrada = ('raiz\nroot\nraiz\n' + 'cat ausente\necho "x" >\nmkdir pasta\necho "ok" > pasta/f\n'
                    'rmdir pasta\ncat pasta/f\ncomando_inexistente\nexit\n')
         resultado = subprocess.run([sys.executable, str(MAIN)], cwd=self.pasta.name,
                                    input=entrada, text=True, capture_output=True, timeout=10)
@@ -436,8 +449,8 @@ class SistemaArquivosTest(unittest.TestCase):
         self.assertEqual(resultado.stdout.count('Erro:'), 4)
         self.assertIn('ok\n', resultado.stdout)
         self.assertNotIn('Traceback', resultado.stderr)
-        self.fs.inicializar()
-        self.assertEqual(self.conteudo('/pasta/f'), b'ok')
+        self.reabrir()
+        self.assertEqual(self.conteudo('/root/pasta/f'), b'ok')
         self.integridade()
 
     def test_destinos_duplicados_e_tipos_invalidos_preservam_imagem(self):
@@ -459,16 +472,16 @@ class SistemaArquivosTest(unittest.TestCase):
         self.assertEqual(inode['tamanho'], 6)
         self.assertEqual(inode['criacao'], '2026-09-21 10:00:00')
         self.assertEqual(inode['modificacao'], inode['criacao'])
-        self.assertEqual(inode['permissoes'], 'rwxr-x')
-        self.assertEqual(inode['dono'], 'usuario')
-        self.assertEqual(inode['criador'], 'usuario')
+        self.assertEqual(inode['permissoes'], 'rwr-')
+        self.assertEqual(inode['dono'], 'root')
+        self.assertEqual(inode['criador'], 'root')
         with patch.object(self.fs, 'agora', return_value='2026-09-21 11:00:00'):
             self.comandos('touch f')
         self.assertEqual(self.fs.inodes[i]['modificacao'], '2026-09-21 11:00:00')
         self.assertEqual(self.fs.inodes[i]['criacao'], '2026-09-21 10:00:00')
         self.assertEqual(self.conteudo('f'), 'á🙂'.encode())
         self.fs.f.close()
-        self.fs.inicializar()
+        self.reabrir()
         self.assertEqual(self.fs.inodes[i]['modificacao'], '2026-09-21 11:00:00')
         self.integridade()
 
@@ -484,7 +497,7 @@ class SistemaArquivosTest(unittest.TestCase):
                     with self.assertRaises(OSError):
                         self.comandos(cmd)
                 self.integridade()
-                self.assertEqual(sum(self.fs.bitmap_inode), 1)
+                self.assertEqual(sum(self.fs.bitmap_inode), self.base_inodes)
         self.assertEqual(antes, self.resumo_disco())
 
     def test_excesso_metadados_descarta_blocos_preparados(self):
@@ -510,12 +523,166 @@ class SistemaArquivosTest(unittest.TestCase):
         resultado = subprocess.run([sys.executable, str(MAIN)], cwd=self.pasta.name,
                                    input=entrada, text=True, capture_output=True, timeout=10)
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
-        self.assertNotIn('Erro:', resultado.stdout)
+        # O roteiro inclui de propósito 13 tentativas que devem ser recusadas.
+        self.assertEqual(resultado.stdout.count('Erro:'), 13, resultado.stdout)
         self.assertEqual(resultado.stdout.count('conteudo legal e mais conteudo'), 3)
-        self.fs.inicializar()
+        self.assertIn('texto publico (agora o arquivo e do bob)', resultado.stdout)
+        self.reabrir()
         self.assertEqual(self.conteudo('/destino/demonstracao/arquivo.txt'),
                          b'conteudo legal e mais conteudo')
         self.integridade()
+
+    # -------------------- SEGURANÇA --------------------
+
+    def criar_usuarios(self, *nomes):
+        with self.fs.transacao():
+            self.fs.definir_senha('root', 'raiz')
+            for nome in nomes:
+                self.fs.useradd(nome, 'senha_' + nome)
+
+    def entrar(self, nome):
+        self.fs.logout()
+        self.fs.login(nome, 'raiz' if nome == 'root' else 'senha_' + nome)
+
+    def test_senhas_com_hash_e_sal(self):
+        self.criar_usuarios('alice', 'bob')
+        with self.fs.transacao():
+            self.fs.passwd('bob', 'senha_alice')  # mesma senha da alice
+        shadow = self.conteudo('/etc/shadow').decode()
+        self.assertNotIn('senha_alice', shadow)
+        self.assertNotIn('raiz', shadow)
+        contas = self.fs.ler_shadow()
+        self.assertNotEqual(contas['alice'], contas['bob'])  # sal diferente
+        self.assertTrue(self.fs.conferir_senha('bob', 'senha_alice'))
+        self.assertFalse(self.fs.conferir_senha('bob', 'senha_bob'))
+        self.assertFalse(self.fs.conferir_senha('ninguem', 'x'))
+        with self.assertRaises(PermissionError):
+            self.fs.login('alice', 'errada')
+        self.integridade()
+
+    def test_shadow_inacessivel_a_usuario_comum(self):
+        self.criar_usuarios('alice')
+        self.entrar('alice')
+        antes = self.resumo_disco()
+        for cmd in ('cat /etc/shadow', 'cp /etc/shadow copia', 'echo "x" > /etc/shadow',
+                    'echo "x" >> /etc/shadow', 'rm /etc/shadow', 'mv /etc/shadow s',
+                    'chmod rwrw /etc/shadow', 'touch /etc/shadow', 'touch /etc/novo'):
+            with self.subTest(cmd=cmd), self.assertRaises(PermissionError):
+                self.comandos(cmd)
+        self.assertEqual(antes, self.resumo_disco())
+        self.comandos('ln -s /etc/shadow atalho')
+        with self.assertRaises(PermissionError):
+            self.comandos('cat atalho')
+        self.assertIn('alice', self.fs.ler_shadow())
+        self.integridade()
+
+    def test_home_privada_e_permissoes_dono_demais(self):
+        self.criar_usuarios('alice', 'bob')
+        self.entrar('alice')
+        self.assertEqual(self.fs.atual, self.fs.resolver('/home/alice'))
+        self.comandos('echo "oi" > f', 'mkdir sub')
+        self.assertEqual(self.fs.inodes[self.fs.resolver('f')]['dono'], 'alice')
+        self.entrar('bob')
+        for cmd in ('ls /home/alice', 'cd /home/alice', 'cat /home/alice/f',
+                    'mkdir /home/alice/x', 'mkdir /home/novo', 'touch /f'):
+            with self.subTest(cmd=cmd), self.assertRaises(PermissionError):
+                self.comandos(cmd)
+        self.entrar('alice')
+        self.comandos('chmod rwr- /home/alice')
+        self.entrar('bob')
+        self.assertEqual(self.comandos('cat /home/alice/f'), 'oi\n')
+        self.comandos('cp /home/alice/f minha_copia')
+        for cmd in ('echo "x" >> /home/alice/f', 'rm /home/alice/f',
+                    'mv /home/alice/f /home/bob/g', 'chmod rwrw /home/alice/f'):
+            with self.subTest(cmd=cmd), self.assertRaises(PermissionError):
+                self.comandos(cmd)
+        self.entrar('alice')
+        self.comandos('chmod 66 f', 'chmod ---- sub')
+        self.assertEqual(self.fs.inodes[self.fs.resolver('f')]['permissoes'], 'rwrw')
+        with self.assertRaises(PermissionError):
+            self.comandos('ls sub')  # nem o dono lê sem r
+        self.entrar('bob')
+        self.comandos('echo " bob" >> /home/alice/f')
+        self.assertEqual(self.conteudo('/home/alice/f'), b'oi bob')
+        self.integridade()
+
+    def test_chown_somente_root(self):
+        self.criar_usuarios('alice', 'bob')
+        self.entrar('alice')
+        self.comandos('echo "x" > f')
+        with self.assertRaises(PermissionError):
+            self.comandos('chown bob f')
+        self.entrar('root')
+        with self.assertRaises(ValueError):
+            self.comandos('chown fulano /home/alice/f')
+        self.comandos('chown bob /home/alice/f', 'chmod rwr- /home/alice')
+        self.entrar('bob')
+        self.comandos('chmod rw-- /home/alice/f', 'echo "do bob" > /home/alice/f')
+        self.entrar('alice')
+        with self.assertRaises(PermissionError):
+            self.comandos('cat f')
+        self.integridade()
+
+    def test_chmod_formatos(self):
+        for modo, esperado in (('64', 'rwr-'), ('60', 'rw--'), ('46', 'r-rw'),
+                               ('00', '----'), ('r-r-', 'r-r-')):
+            self.assertEqual(self.fs.converter_modo(modo), esperado)
+        for modo in ('7', '77', '65', 'rwx', 'wr--', '640'):
+            with self.subTest(modo=modo), self.assertRaises(ValueError):
+                self.fs.converter_modo(modo)
+
+    def test_comandos_de_root_e_passwd(self):
+        self.criar_usuarios('alice', 'bob')
+        self.entrar('alice')
+        with self.assertRaises(PermissionError):
+            self.comandos('useradd carol')
+        with self.assertRaises(PermissionError):
+            self.alterar(self.fs.passwd, 'bob', 'x')
+        self.alterar(self.fs.passwd, 'alice', 'nova')
+        self.assertTrue(self.fs.conferir_senha('alice', 'nova'))
+        self.entrar('root')
+        for nome in ('alice', 'Maiuscula', 'com:dois', ''):
+            with self.subTest(nome=nome), self.assertRaises((ValueError, OSError)):
+                self.alterar(self.fs.useradd, nome, 'x')
+        with self.assertRaises(ValueError):
+            self.alterar(self.fs.useradd, 'carol', '')
+        self.integridade()
+
+    def test_permissoes_persistem_e_imagem_antiga_migra(self):
+        self.criar_usuarios('alice')
+        self.entrar('alice')
+        self.comandos('echo "x" > f', 'chmod rw-- f')
+        self.fs.f.close()
+        self.fs.inicializar()
+        self.assertIsNone(self.fs.usuario_atual)
+        self.fs.usuario_atual = 'root'
+        inode = self.fs.inodes[self.fs.resolver('/home/alice/f')]
+        self.assertEqual((inode['dono'], inode['permissoes']), ('alice', 'rw--'))
+        self.assertTrue(self.fs.conferir_senha('alice', 'senha_alice'))
+        # Imagem da versão anterior: "rwxr-x", dono "usuario" e sem /etc/shadow.
+        self.fs.usuario_atual = 'root'
+        with self.fs.transacao():
+            self.fs.inodes[0]['permissoes'] = 'rwxr-x'
+            self.fs.inodes[0]['dono'] = 'usuario'
+            self.fs.rm('/etc/shadow')
+        self.fs.f.close()
+        self.reabrir()
+        self.assertEqual((self.fs.inodes[0]['dono'], self.fs.inodes[0]['permissoes']),
+                         ('root', 'rwr-'))
+        self.assertEqual(self.fs.ler_shadow(), {})
+        self.integridade()
+
+    def test_terminal_exige_login(self):
+        self.fs.f.close()
+        entrada = ('raiz\nroot\nerrada\nroot\nraiz\nuseradd ana\nsenha_ana\nlogout\n'
+                   'ana\nsenha_ana\nwhoami\ncat /etc/shadow\nexit\n')
+        resultado = subprocess.run([sys.executable, str(MAIN)], cwd=self.pasta.name,
+                                   input=entrada, text=True, capture_output=True, timeout=20)
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertIn('ana@myfs> ana', resultado.stdout)
+        self.assertEqual(resultado.stdout.count('Erro:'), 2)
+        with open(self.fs.DISCO, 'rb') as imagem:
+            self.assertNotIn(b'senha_ana', imagem.read())
 
 
 if __name__ == '__main__':

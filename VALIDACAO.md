@@ -2,16 +2,14 @@
 
 ## Ambiente
 
-- Data da execução: 21/09/2026.
-- Sistema operacional: Linux.
-- Versão do Python: 3.12.
+- Data da execução: 25/10/2026.
+- Sistema operacional: Windows 10 (a versão anterior também foi verificada em Linux com Python 3.12).
+- Versão do Python: 3.14.
 - Bibliotecas utilizadas: biblioteca padrão do Python.
-
-A execução nativa no Windows não foi verificada nesta etapa.
 
 ## Resultado
 
-Foram executados **32 testes automatizados, todos aprovados, sem falhas ou erros**.
+Foram executados **40 testes automatizados, todos aprovados, sem falhas ou erros**.
 
 A suíte também foi executada nos arquivos extraídos do ZIP de entrega.
 
@@ -36,7 +34,13 @@ Cada teste utiliza uma imagem temporária. O arquivo `filesystem.img` utilizado 
 | Capacidade | Esgotamento dos blocos e dos i-nodes |
 | Tratamento de erros | Sintaxe inválida, destinos ocupados, tipos incorretos e falta de recursos |
 | Terminal | Continuidade após erros, encerramento por EOF e `Ctrl+C` |
-| Demonstração | Execução do roteiro incluído no pacote |
+| Demonstração | Execução do roteiro incluído no pacote, com as 13 recusas esperadas |
+| Senhas | Hash com sal, senhas iguais com hashes diferentes, senha ausente da imagem em texto plano, login recusado |
+| Arquivo de senhas | Usuário comum não lê, copia, altera, renomeia, remove nem acessa por link o `/etc/shadow` |
+| Permissões | Home privada, leitura e escrita para dono e demais, `chmod` nos dois formatos, efeito em `ls`, `cd`, `cat`, `cp`, `mv`, `rm`, `mkdir` |
+| `chmod` e `chown` | `chmod` só pelo dono ou root; `chown` só pelo root e só para usuários existentes |
+| Usuários | `useradd` e `passwd` restritos, nomes inválidos e senha vazia recusados |
+| Persistência e migração | Donos, permissões e senhas após reabrir; conversão de imagem da versão anterior |
 
 ## Blocos e encadeamento
 
@@ -97,6 +101,6 @@ Foram verificados:
 
 Os resultados correspondem aos cenários descritos neste documento.
 
-As permissões foram verificadas como campos armazenados. Não há autenticação ou controle de acesso na implementação.
+Os testes de segurança cobrem o controle de acesso dentro do disco virtual. A proteção do arquivo `filesystem.img` no computador hospedeiro depende do sistema operacional.
 
-Não foram realizados testes de queda real de energia, acesso simultâneo à mesma imagem ou execução nativa no Windows. O mecanismo de transação protege a preparação dos comandos, mas não oferece recuperação automática de interrupções durante a gravação final.
+Não foram realizados testes de queda real de energia ou de acesso simultâneo à mesma imagem. O mecanismo de transação protege a preparação dos comandos, mas não oferece recuperação automática de interrupções durante a gravação final.
